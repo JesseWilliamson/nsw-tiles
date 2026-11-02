@@ -1,18 +1,21 @@
 # NSW imagery tile server
 
 A caching proxy for NSW Spatial Services aerial imagery (CC BY 4.0), with a
-map viewer. Python 3.10+ and Pillow.
+map viewer. Python 3.10+ and Pillow, managed with [Poetry](https://python-poetry.org/).
 
 ```bash
-pip install Pillow
-python server.py          # then open http://localhost:8080
+poetry install            # creates a virtualenv and installs Pillow from poetry.lock
+poetry run python server.py   # then open http://localhost:8080
 ```
+
+Add a dependency with `poetry add <package>` (e.g. `poetry add rasterio` for
+exercise 3); that updates both `pyproject.toml` and `poetry.lock`.
 
 Pre-fetch an area (always check the estimate first):
 
 ```bash
-  python seed.py --bbox 151.19 -33.875 151.225 -33.85 --zmin 12 --zmax 19 --dry-run
-python seed.py --bbox 151.19 -33.875 151.225 -33.85 --zmin 12 --zmax 19
+poetry run python seed.py --bbox 151.19 -33.875 151.225 -33.85 --zmin 12 --zmax 19 --dry-run
+poetry run python seed.py --bbox 151.19 -33.875 151.225 -33.85 --zmin 12 --zmax 19
 ```
 
 ## Files

@@ -1,0 +1,18 @@
+[project]
+name = "nsw-tiles"
+version = "0.1.0"
+description = "Caching proxy and viewer for NSW Spatial Services aerial imagery"
+authors = [
+    {name = "Jesse Williamson", email = "jesse.williamson.mail@gmail.com"}
+]
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pillow (>=10)"
+]
+
+[tool.poetry]
+# This repo is a set of runnable scripts, not a library to publish.
+# Without this, `poetry install` tries to install the project itself as a
+# package and fails because there's no nsw_tiles/ package directory.
+package-mode = false
