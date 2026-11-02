@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NSW Imagery Viewer</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+  :root {
+    --panel: rgba(18, 20, 24, 0.88);
+    --text: #e8e6e1;
+    --muted: #9a978f;
+    --accent: #f2b544;
+    --line: rgba(255, 255, 255, 0.12);
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  html, body, #map { height: 100%; margin: 0; background: #0d0f12; }
+  body { font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--text); }
+
+  .hud {
+    position: absolute; z-index: 1000; top: 12px; right: 12px; width: 250px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 12px 14px; backdrop-filter: blur(6px);
+  }
+  .hud h1 { font-size: 13px; margin: 0 0 8px; letter-spacing: .02em; }
+  .row { display: flex; justify-content: space-between; gap: 8px; }
+  .row span:first-child { color: var(--muted); }
+  .row span:last-child { font-family: var(--mono); font-size: 12px; }
+  .sep { border-top: 1px solid var(--line); margin: 9px 0; }
+  .note { color: var(--muted); font-size: 11.5px; margin-top: 4px; }
+  .res-bar { height: 4px; border-radius: 2px; background: var(--line); margin-top: 6px; overflow: hidden; }
+  .res-bar > div { height: 100%; background: var(--accent); transition: width .2s; }
+  label.toggle { display: flex; gap: 6px; align-items: center; cursor: pointer; margin-top: 2px; }
+  .places { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 4px; }
+  .places button {
+    font: inherit; font-size: 12px; color: var(--text); background: rgba(255,255,255,.06);
+    border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px; cursor: pointer;
+  }
+  .places button:hover { border-color: var(--accent); }
+
+  /* Debug mode: outline each tile and show where its pixels came from. */
+  .tile { position: relative; }
+  .tile img { width: 256px; height: 256px; display: block; }
+  .tile .badge { display: none; }
+  .debug .tile { outline: 1px solid rgba(242, 181, 68, .55); outline-offset: -1px; }
+  .debug .tile .badge {
+    display: block; position: absolute; left: 4px; top: 4px; padding: 1px 5px;
+    font: 11px var(--mono); color: #111; background: var(--accent); border-radius: 3px;
+  }
+  .debug .tile.overzoom .badge { background: #e06c5b; color: #fff; }
+
+  @media (max-width: 600px) { .hud { left: 12px; right: 12px; width: auto; top: auto; bottom: 28px; } }
+</style>
+</head>
+<body>
+<div id="map"></div>
+
+<div class="hud">
+  <h1>NSW Imagery</h1>
+  <div class="row"><span>Zoom</span><span id="zoom">–</span></div>
+  <div class="row"><span>Centre</span><span id="centre">–</span></div>
+  <div class="row"><span>Ground res.</span><span id="mpp">–</span></div>
+  <div class="res-bar" title="How close this zoom gets to the 0.6 m/px street-level threshold"><div id="resbar"></div></div>
+  <div class="row" style="margin-top:6px"><span>Tile at cursor</span><span id="cursor">–</span></div>
+  <div class="sep"></div>
+  <div class="row"><span>Cache hits</span><span id="s-hit">0</span></div>
+  <div class="row"><span>Fetched upstream</span><span id="s-up">0</span></div>
+  <div class="row"><span>Overzoomed</span><span id="s-oz">0</span></div>
+  <div class="row"><span>Deduped</span><span id="s-dd">0</span></div>
+  <div class="sep"></div>
+  <label class="toggle"><input type="checkbox" id="debug"> Show tiles and sources</label>
+  <div class="note">Red badges are overzoomed: real pixels from a parent tile, stretched.</div>
+  <div class="sep"></div>
+  <div class="places" id="places"></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+const ATTRIBUTION =
+  '© State of New South Wales (Spatial Services, DCS NSW), ' +
+  '<a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>';
+
+const map = L.map('map', { zoomControl: true, maxZoom: 21 }).setView([-33.8568, 151.2153], 17);
+
+// A custom tile layer. Leaflet's default puts each tile in an <img>, which
+// can't see response headers. Fetching each tile ourselves lets us read
+// X-Tile-Source (hit / miss / overzoom-N) and label the tile with it.
+const Imagery = L.GridLayer.extend({
+  createTile(coords, done) {
+    const el = document.createElement('div');
+    el.className = 'tile';
+    const img = document.createElement('img');
+    const badge = document.createElement('span');
+    badge.className = 'badge';
+    el.append(img, badge);
+
+    fetch(`/tiles/${coords.z}/${coords.x}/${coords.y}`)
+      .then(r => {
+        const src = r.headers.get('X-Tile-Source') || '?';
+        badge.textContent = `${coords.z}/${coords.x}/${coords.y} · ${src}`;
+        if (src.startsWith('overzoom')) el.classList.add('overzoom');
+        return r.blob();
+      })
+      .then(blob => {
+        img.onload = () => { URL.revokeObjectURL(img.src); done(null, el); };
+        img.src = URL.createObjectURL(blob);
+      })
+      .catch(err => done(err, el));
+    return el;
+  }
+});
+new Imagery({ maxZoom: 21, attribution: ATTRIBUTION }).addTo(map);
+
+// ---------- HUD ----------
+// Same formula as tilemath.meters_per_pixel()
+const mpp = (z, lat) => 40075016.686 / (256 * 2 ** z) * Math.cos(lat * Math.PI / 180);
+
+function lonLatToTile(lon, lat, z) {
+  const n = 2 ** z, phi = lat * Math.PI / 180;
+  return [
+    Math.floor((lon + 180) / 360 * n),
+    Math.floor((1 - Math.log(Math.tan(phi) + 1 / Math.cos(phi)) / Math.PI) / 2 * n),
+  ];
+}
+
+function updateView() {
+  const z = map.getZoom(), c = map.getCenter();
+  const m = mpp(z, c.lat);
+  document.getElementById('zoom').textContent = z;
+  document.getElementById('centre').textContent = `${c.lat.toFixed(5)}, ${c.lng.toFixed(5)}`;
+  document.getElementById('mpp').textContent = m >= 1 ? `${m.toFixed(1)} m/px` : `${(m * 100).toFixed(0)} cm/px`;
+  // log scale: 1000 m/px -> 0%, 0.6 m/px (street level) -> 100%
+  const pct = Math.max(0, Math.min(100, (Math.log10(1000) - Math.log10(m)) / (Math.log10(1000) - Math.log10(0.6)) * 100));
+  document.getElementById('resbar').style.width = pct + '%';
+}
+map.on('moveend zoomend', updateView);
+updateView();
+
+map.on('mousemove', e => {
+  const z = map.getZoom();
+  const [x, y] = lonLatToTile(e.latlng.lng, e.latlng.lat, z);
+  document.getElementById('cursor').textContent = `${z}/${x}/${y}`;
+});
+
+async function pollStats() {
+  try {
+    const s = await (await fetch('/stats')).json();
+    document.getElementById('s-hit').textContent = s.hit.toLocaleString();
+    document.getElementById('s-up').textContent = s.upstream_requests.toLocaleString();
+    document.getElementById('s-oz').textContent = s.overzoom.toLocaleString();
+    document.getElementById('s-dd').textContent = s.deduped.toLocaleString();
+  } catch (_) { /* server restarting */ }
+}
+setInterval(pollStats, 2000);
+pollStats();
+
+document.getElementById('debug').addEventListener('change', e =>
+  map.getContainer().classList.toggle('debug', e.target.checked));
+
+// Places chosen to show how resolution varies across the state
+const places = [
+  ['Opera House', -33.8568, 151.2153, 19],
+  ['Byron Bay', -28.6436, 153.6150, 18],
+  ['Broken Hill', -31.9530, 141.4530, 17],
+  ['All of NSW', -32.5, 147.0, 6],
+];
+const box = document.getElementById('places');
+for (const [name, lat, lon, z] of places) {
+  const b = document.createElement('button');
+  b.textContent = name;
+  b.onclick = () => map.flyTo([lat, lon], z, { duration: 1.2 });
+  box.append(b);
+}
+</script>
+</body>
+</html>
