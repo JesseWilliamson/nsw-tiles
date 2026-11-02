@@ -3,6 +3,10 @@ A caching tile proxy for NSW Spatial Services imagery, plus a map viewer.
 
     python server.py            ->  open http://localhost:8080
 
+Or run the cache somewhere else (e.g. a droplet) and only the viewer here:
+
+    python server.py --remote http://localhost:9000   # via an SSH tunnel
+
 What happens when the viewer asks for /tiles/z/x/y:
 
   1. Coverage check  - is the tile anywhere near NSW? If not, answer with a
@@ -91,6 +95,10 @@ class TileStore:
     def count(self, key):
         with self.stats_lock:
             self.stats[key] += 1
+
+    def snapshot_stats(self) -> dict:
+        with self.stats_lock:
+            return dict(self.stats)
 
     # ---------- cache layout: cache/z/x/y.jpg | .png | .none ----------
     # ".none" is a NEGATIVE cache entry: upstream said "no tile here".
@@ -189,6 +197,36 @@ class TileStore:
         return data
 
 
+class RemoteStore:
+    """Same interface as TileStore, but every tile comes from another
+    server.py (the one holding the cache). No local cache, dedupe or rate
+    limit: the remote already does all of that, and doing it twice would just
+    add latency. This is the "thin client" half of a split deployment.
+    """
+
+    def __init__(self, base_url: str):
+        self.base = base_url.rstrip("/")
+
+    def _open(self, path: str):
+        req = urllib.request.Request(self.base + path, headers={"User-Agent": USER_AGENT})
+        return urllib.request.urlopen(req, timeout=30)
+
+    def get(self, z, x, y):
+        # Errors (tunnel down, remote 502) propagate; the handler turns them into a 502.
+        with self._open(f"/tiles/{z}/{x}/{y}") as resp:
+            data = resp.read()
+            source = resp.headers.get("X-Tile-Source", "remote")
+        if source in ("outside", "empty"):
+            return None, source  # remote sent its transparent placeholder
+        return data, source
+
+    def snapshot_stats(self) -> dict:
+        with self._open("/stats") as resp:
+            s = json.load(resp)
+        s["remote"] = self.base
+        return s
+
+
 def intersects_nsw(z, x, y) -> bool:
     xmin, ymin, xmax, ymax = tilemath.tile_bounds_mercator(x, y, z)
     exmin, eymin, exmax, eymax = NSW_EXTENT
@@ -260,8 +298,10 @@ def make_handler(store: TileStore, max_zoom: int):
             if path in ("/", "/index.html"):
                 return self._send(200, viewer_html, "text/html; charset=utf-8")
             if path == "/stats":
-                with store.stats_lock:
-                    s = dict(store.stats)
+                try:
+                    s = store.snapshot_stats()
+                except Exception as e:
+                    return self._send(502, f"stats error: {e}".encode(), "text/plain")
                 s["attribution"] = ATTRIBUTION
                 return self._send(200, json.dumps(s).encode(), "application/json",
                                   {"Cache-Control": "no-store"})
@@ -294,6 +334,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", type=int, default=8080)
+    ap.add_argument("--remote", metavar="URL",
+                    help="forward tile requests to another server.py at URL instead of "
+                         "caching locally (e.g. http://localhost:9000 over an SSH tunnel)")
     ap.add_argument("--cache-dir", type=Path, default=HERE / "cache")
     ap.add_argument("--upstream", default=DEFAULT_UPSTREAM)
     ap.add_argument("--rate", type=float, default=8.0,
@@ -303,9 +346,15 @@ def main():
                     help="how many zooms past the real data to stretch (default 3)")
     args = ap.parse_args()
 
-    store = TileStore(args.cache_dir, args.upstream, args.rate, args.overzoom_levels)
+    if args.remote:
+        store = RemoteStore(args.remote)
+        where = f"remote: {store.base}"
+    else:
+        store = TileStore(args.cache_dir, args.upstream, args.rate, args.overzoom_levels)
+        where = f"cache: {args.cache_dir}"
+    # 127.0.0.1 on purpose, on the droplet too: reach it through SSH, not the internet.
     server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(store, args.max_zoom))
-    print(f"Serving on http://localhost:{args.port}  (cache: {args.cache_dir})")
+    print(f"Serving on http://localhost:{args.port}  ({where})")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

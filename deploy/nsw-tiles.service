@@ -1,0 +1,27 @@
+# systemd unit for the droplet that holds the cache.
+# Install:  sudo cp deploy/nsw-tiles.service /etc/systemd/system/
+#           sudo systemctl daemon-reload && sudo systemctl enable --now nsw-tiles
+# Logs:     journalctl -u nsw-tiles -f
+[Unit]
+Description=NSW imagery caching tile server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=tiles
+WorkingDirectory=/opt/nsw-tiles
+# The in-project venv created by `poetry install` (virtualenvs.in-project = true).
+# Calling its python directly means systemd doesn't need Poetry on its PATH.
+ExecStart=/opt/nsw-tiles/.venv/bin/python server.py --port 8080 --cache-dir /var/lib/nsw-tiles
+Restart=on-failure
+RestartSec=5
+
+# Hardening: read-only filesystem except the cache directory.
+StateDirectory=nsw-tiles
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

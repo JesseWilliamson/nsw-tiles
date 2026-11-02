@@ -18,6 +18,52 @@ poetry run python seed.py --bbox 151.19 -33.875 151.225 -33.85 --zmin 12 --zmax 
 poetry run python seed.py --bbox 151.19 -33.875 151.225 -33.85 --zmin 12 --zmax 19
 ```
 
+## Running the cache on a droplet
+
+Keep the cache (and all traffic to NSW) on a DigitalOcean droplet, and run
+only the viewer locally:
+
+```
+browser ─► local server.py --remote ─(SSH tunnel)─► droplet server.py ─► NSW
+           no cache, just forwards                  cache, dedupe, rate limit
+```
+
+The droplet's server stays bound to `127.0.0.1`, so it is **not** reachable
+from the internet. The SSH tunnel is the only way in, which gives you
+authentication and encryption without writing any of it yourself.
+
+**On the droplet, once** (Ubuntu, as root):
+
+```bash
+apt install -y python3 python3-venv pipx git
+adduser --system --group tiles
+git clone https://github.com/JesseWilliamson/nsw-tiles.git /opt/nsw-tiles
+cd /opt/nsw-tiles && pipx run poetry install --only main
+cp deploy/nsw-tiles.service /etc/systemd/system/
+systemctl daemon-reload && systemctl enable --now nsw-tiles
+curl -s localhost:8080/stats    # should print JSON
+```
+
+`poetry.toml` puts the virtualenv at `/opt/nsw-tiles/.venv`, which is the path
+the systemd unit runs. The cache lives in `/var/lib/nsw-tiles`, which systemd
+creates and owns for the `tiles` user. To update later: `git pull`, then
+`systemctl restart nsw-tiles`.
+
+**On your machine, each session:**
+
+```bash
+ssh -N -L 9000:localhost:8080 root@<droplet-ip>          # terminal 1: the tunnel
+poetry run python server.py --remote http://localhost:9000   # terminal 2
+```
+
+Then open http://localhost:8080. `-L 9000:localhost:8080` means "connections
+to my port 9000 come out of the droplet and go to *its* localhost:8080".
+`-N` means "no shell, just the tunnel". If the tunnel drops, tiles return 502
+until you reconnect.
+
+Seeding runs on the droplet, where the cache is:
+`cd /opt/nsw-tiles && sudo -u tiles .venv/bin/python seed.py --cache-dir /var/lib/nsw-tiles ...`
+
 ## Files
 
 | File | What it teaches |
